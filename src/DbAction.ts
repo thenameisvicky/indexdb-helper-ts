@@ -139,14 +139,14 @@ export class DbAction<TRead = unknown, TWrite = unknown> {
    * - Sorted retrieval operations
    * - Performance optimization when multiple indexes exist
    *
-   * @protected
+   * @public
    *
    * @param indexName
    * @returns {this}
    *
    * @throws {TypeError}
    */
-  protected configureIndexHint(indexName: string): this {
+  public configureIndexHint(indexName: string): this {
     if (typeof indexName !== "string" || indexName.length === 0) {
       throw new TypeError("indexName must be a non-empty string");
     }
@@ -163,14 +163,14 @@ export class DbAction<TRead = unknown, TWrite = unknown> {
    * - "relaxed": Allows optimizations that may defer disk writes.
    *   Use for better performance when immediate persistence is not required.
    *
-   * @protected
+   * @public
    *
    * @param durability
    * @returns {this}
    *
    * @throws {TypeError}
    */
-  protected configureDurability(durability: TransactionDurability): this {
+  public configureDurability(durability: TransactionDurability): this {
     if (durability !== "strict" && durability !== "relaxed") {
       throw new TypeError('durability must be either "strict" or "relaxed"');
     }
@@ -185,13 +185,13 @@ export class DbAction<TRead = unknown, TWrite = unknown> {
    * For write operations, this is the document to insert.
    * For update operations, this is the partial document to merge with existing data.
    *
-   * @protected
+   * @public
    *
    * @param updateDoc
    * @returns {this}
    *
    */
-  protected setDocumentData(updateDoc: TWrite): this {
+  public setDocumentData(updateDoc: TWrite): this {
     this.updateDoc = updateDoc;
     return this;
   }
@@ -199,13 +199,13 @@ export class DbAction<TRead = unknown, TWrite = unknown> {
   /**
    * Sets the key or key range for delete operations.
    *
-   * @protected
+   * @public
    *
    * @param deleteKey
    * @returns {this}
    *
    */
-  protected setDeleteKey(deleteKey: IDBValidKey | IDBKeyRange): this {
+  public setDeleteKey(deleteKey: IDBValidKey | IDBKeyRange): this {
     this.deleteDoc = deleteKey;
     return this;
   }
@@ -234,7 +234,7 @@ export class DbAction<TRead = unknown, TWrite = unknown> {
   private resolveStoreOrIndex(
     transactionMode: IDBTransactionMode = "readonly",
     allowIndex: boolean = false
-  ): IDBObjectStore | IDBIndex {
+  ): { source: IDBObjectStore | IDBIndex; tranx: IDBTransaction } {
     const transaction = this.databaseInstance.transaction(
       [this.storeName],
       transactionMode,
@@ -249,10 +249,10 @@ export class DbAction<TRead = unknown, TWrite = unknown> {
       this.hintIndex &&
       objectStore.indexNames.contains(this.hintIndex)
     ) {
-      return objectStore.index(this.hintIndex);
+      return { source: objectStore.index(this.hintIndex), tranx: transaction };
     }
 
-    return objectStore;
+    return { source: objectStore, tranx: transaction };
   }
 
   /**
@@ -268,19 +268,32 @@ export class DbAction<TRead = unknown, TWrite = unknown> {
    * @returns {Promise<TRead[]>}
    */
   private async executeRead(): Promise<TRead[]> {
-    const source = this.resolveStoreOrIndex("readonly", true);
+    const { source: store, tranx: transaction } = this.resolveStoreOrIndex(
+      "readonly",
+      true
+    );
 
-    const request = source.getAll();
+    const request = store.getAll();
 
     return new Promise<TRead[]>((resolve, reject) => {
+      let result: TRead[] | undefined;
       request.onsuccess = () => {
-        resolve(request.result as TRead[]);
+        result = request.result as TRead[];
       };
       request.onerror = () => {
         reject(
           request.error || new Error("Read operation failed with unknown error")
         );
       };
+      transaction.oncomplete = () => {
+        if (result !== undefined) {
+          resolve(result);
+        } else {
+          reject(new Error("Read operation completed without result"));
+        }
+      };
+      transaction.onerror = () => reject(transaction.error);
+      transaction.onabort = () => reject(transaction.error);
     });
   }
 
@@ -300,27 +313,29 @@ export class DbAction<TRead = unknown, TWrite = unknown> {
    * @throws {DOMException}
    */
   private async executeWrite(): Promise<void> {
-    const store = this.resolveStoreOrIndex(
-      "readwrite",
-      false
-    ) as IDBObjectStore;
-
     if (this.updateDoc === undefined) {
       throw new Error("Document data is required for write operations");
+    }
+
+    const { source: store, tranx: transaction } = this.resolveStoreOrIndex(
+      "readwrite",
+      false
+    );
+
+    if (!(store instanceof IDBObjectStore)) {
+      throw new Error(
+        "Write operations require an IDBObjectStore, not an IDBIndex"
+      );
     }
 
     const request = store.add(this.updateDoc);
 
     return new Promise<void>((resolve, reject) => {
-      request.onsuccess = () => {
-        resolve();
-      };
-      request.onerror = () => {
-        reject(
-          request.error ||
-            new Error("Write operation failed with unknown error")
-        );
-      };
+      request.onerror = () =>
+        reject(request.error || new Error("Write operation failed"));
+      transaction.oncomplete = () => resolve();
+      transaction.onerror = () => reject(transaction.error);
+      transaction.onabort = () => reject(transaction.error);
     });
   }
 
@@ -353,10 +368,16 @@ export class DbAction<TRead = unknown, TWrite = unknown> {
       throw new Error("Document data is required for update operations");
     }
 
-    const store = this.resolveStoreOrIndex(
+    const { source: store, tranx: transaction } = this.resolveStoreOrIndex(
       "readwrite",
       false
-    ) as IDBObjectStore;
+    );
+
+    if (store instanceof IDBIndex) {
+      throw new Error(
+        "Update operations require an IDBObjectStore, not an IDBIndex"
+      );
+    }
 
     const keyPath = store.keyPath;
     if (keyPath === null) {
@@ -382,15 +403,16 @@ export class DbAction<TRead = unknown, TWrite = unknown> {
     const request = store.put(this.updateDoc);
 
     return new Promise<void>((resolve, reject) => {
-      request.onsuccess = () => {
-        resolve();
-      };
       request.onerror = () => {
         reject(
           request.error ||
             new Error("Update operation failed with unknown error")
         );
       };
+
+      transaction.oncomplete = () => resolve();
+      transaction.onerror = () => reject(transaction.error);
+      transaction.onabort = () => reject(transaction.error);
     });
   }
 
@@ -417,23 +439,25 @@ export class DbAction<TRead = unknown, TWrite = unknown> {
       );
     }
 
-    const store = this.resolveStoreOrIndex(
+    const { source: store, tranx: transaction } = this.resolveStoreOrIndex(
       "readwrite",
       false
-    ) as IDBObjectStore;
+    );
+
+    if (!(store instanceof IDBObjectStore)) {
+      throw new Error(
+        "Delete operations require an IDBObjectStore, not an IDBIndex"
+      );
+    }
 
     const request = store.delete(this.deleteDoc);
 
     return new Promise<void>((resolve, reject) => {
-      request.onsuccess = () => {
-        resolve();
-      };
-      request.onerror = () => {
-        reject(
-          request.error ||
-            new Error("Delete operation failed with unknown error")
-        );
-      };
+      request.onerror = () =>
+        reject(request.error || new Error("Delete operation failed"));
+      transaction.oncomplete = () => resolve();
+      transaction.onerror = () => reject(transaction.error);
+      transaction.onabort = () => reject(transaction.error);
     });
   }
 
@@ -456,23 +480,30 @@ export class DbAction<TRead = unknown, TWrite = unknown> {
    * @throws {DOMException}
    */
   private async executeClear(): Promise<void> {
-    const store = this.resolveStoreOrIndex(
+    const { source: store, tranx: transaction } = this.resolveStoreOrIndex(
       "readwrite",
       false
-    ) as IDBObjectStore;
+    );
+
+    if (!(store instanceof IDBObjectStore)) {
+      throw new Error(
+        "Clear operations require an IDBObjectStore, not an IDBIndex"
+      );
+    }
 
     const request = store.clear();
 
     return new Promise<void>((resolve, reject) => {
-      request.onsuccess = () => {
-        resolve();
-      };
       request.onerror = () => {
         reject(
           request.error ||
             new Error("Clear operation failed with unknown error")
         );
       };
+
+      transaction.oncomplete = () => resolve();
+      transaction.onerror = () => reject(transaction.error);
+      transaction.onabort = () => reject(transaction.error);
     });
   }
 

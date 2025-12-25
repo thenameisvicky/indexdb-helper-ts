@@ -10,7 +10,7 @@
   ],
   "scripts": {
     "build": "tsc",
-    "test": "mocha --require ts-node/register 'test/**/*.spec.ts'"
+    "mocha": "tsx node_modules/mocha/bin/mocha test/**/*.ts"
   },
   "keywords": [
     "indexeddb",
@@ -28,6 +28,10 @@
     "chai": "^6.2.2",
     "mocha": "^11.7.5",
     "ts-node": "^10.9.1",
+    "tsx": "^4.21.0",
     "typescript": "^5.2.2"
+  },
+  "dependencies": {
+    "fake-indexeddb": "^6.2.5"
   }
 }
