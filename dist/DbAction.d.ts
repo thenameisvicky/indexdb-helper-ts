@@ -118,7 +118,7 @@ export declare class DbAction<TRead = unknown, TWrite = unknown> {
      *
      * @throws {TypeError}
      */
-    public configureIndexHint(indexName: string): this;
+    configureIndexHint(indexName: string): this;
     /**
      * Configures the transaction durability setting.
      *
@@ -135,7 +135,7 @@ export declare class DbAction<TRead = unknown, TWrite = unknown> {
      *
      * @throws {TypeError}
      */
-    public configureDurability(durability: TransactionDurability): this;
+    configureDurability(durability: TransactionDurability): this;
     /**
      * Sets the document data for write and update operations.
      *
@@ -149,7 +149,7 @@ export declare class DbAction<TRead = unknown, TWrite = unknown> {
      * @returns {this}
      *
      */
-    public setDocumentData(updateDoc: TWrite): this;
+    setDocumentData(updateDoc: TWrite): this;
     /**
      * Sets the key or key range for delete operations.
      *
@@ -159,7 +159,7 @@ export declare class DbAction<TRead = unknown, TWrite = unknown> {
      * @returns {this}
      *
      */
-    public setDeleteKey(deleteKey: IDBValidKey | IDBKeyRange): this;
+    setDeleteKey(deleteKey: IDBValidKey | IDBKeyRange): this;
     /**
      * Resolves the appropriate store or index for the operation.
      *

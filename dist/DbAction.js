@@ -202,9 +202,9 @@ export class DbAction {
         if (allowIndex &&
             this.hintIndex &&
             objectStore.indexNames.contains(this.hintIndex)) {
-            return objectStore.index(this.hintIndex);
+            return { source: objectStore.index(this.hintIndex), tranx: transaction };
         }
-        return objectStore;
+        return { source: objectStore, tranx: transaction };
     }
     /**
      * Executes a read operation to retrieve all records from the store.
@@ -219,15 +219,26 @@ export class DbAction {
      * @returns {Promise<TRead[]>}
      */
     async executeRead() {
-        const source = this.resolveStoreOrIndex("readonly", true);
-        const request = source.getAll();
+        const { source: store, tranx: transaction } = this.resolveStoreOrIndex("readonly", true);
+        const request = store.getAll();
         return new Promise((resolve, reject) => {
+            let result;
             request.onsuccess = () => {
-                resolve(request.result);
+                result = request.result;
             };
             request.onerror = () => {
                 reject(request.error || new Error("Read operation failed with unknown error"));
             };
+            transaction.oncomplete = () => {
+                if (result !== undefined) {
+                    resolve(result);
+                }
+                else {
+                    reject(new Error("Read operation completed without result"));
+                }
+            };
+            transaction.onerror = () => reject(transaction.error);
+            transaction.onabort = () => reject(transaction.error);
         });
     }
     /**
@@ -246,19 +257,19 @@ export class DbAction {
      * @throws {DOMException}
      */
     async executeWrite() {
-        const store = this.resolveStoreOrIndex("readwrite", false);
         if (this.updateDoc === undefined) {
             throw new Error("Document data is required for write operations");
         }
+        const { source: store, tranx: transaction } = this.resolveStoreOrIndex("readwrite", false);
+        if (!(store instanceof IDBObjectStore)) {
+            throw new Error("Write operations require an IDBObjectStore, not an IDBIndex");
+        }
         const request = store.add(this.updateDoc);
         return new Promise((resolve, reject) => {
-            request.onsuccess = () => {
-                resolve();
-            };
-            request.onerror = () => {
-                reject(request.error ||
-                    new Error("Write operation failed with unknown error"));
-            };
+            request.onerror = () => reject(request.error || new Error("Write operation failed"));
+            transaction.oncomplete = () => resolve();
+            transaction.onerror = () => reject(transaction.error);
+            transaction.onabort = () => reject(transaction.error);
         });
     }
     /**
@@ -289,7 +300,10 @@ export class DbAction {
         if (this.updateDoc === undefined) {
             throw new Error("Document data is required for update operations");
         }
-        const store = this.resolveStoreOrIndex("readwrite", false);
+        const { source: store, tranx: transaction } = this.resolveStoreOrIndex("readwrite", false);
+        if (store instanceof IDBIndex) {
+            throw new Error("Update operations require an IDBObjectStore, not an IDBIndex");
+        }
         const keyPath = store.keyPath;
         if (keyPath === null) {
             throw new Error("Update operations require a keyPath. Object store must have an inline key.");
@@ -304,13 +318,13 @@ export class DbAction {
         }
         const request = store.put(this.updateDoc);
         return new Promise((resolve, reject) => {
-            request.onsuccess = () => {
-                resolve();
-            };
             request.onerror = () => {
                 reject(request.error ||
                     new Error("Update operation failed with unknown error"));
             };
+            transaction.oncomplete = () => resolve();
+            transaction.onerror = () => reject(transaction.error);
+            transaction.onabort = () => reject(transaction.error);
         });
     }
     /**
@@ -333,16 +347,16 @@ export class DbAction {
         if (this.deleteDoc === undefined) {
             throw new Error("Delete key or key range is required for delete operations");
         }
-        const store = this.resolveStoreOrIndex("readwrite", false);
+        const { source: store, tranx: transaction } = this.resolveStoreOrIndex("readwrite", false);
+        if (!(store instanceof IDBObjectStore)) {
+            throw new Error("Delete operations require an IDBObjectStore, not an IDBIndex");
+        }
         const request = store.delete(this.deleteDoc);
         return new Promise((resolve, reject) => {
-            request.onsuccess = () => {
-                resolve();
-            };
-            request.onerror = () => {
-                reject(request.error ||
-                    new Error("Delete operation failed with unknown error"));
-            };
+            request.onerror = () => reject(request.error || new Error("Delete operation failed"));
+            transaction.oncomplete = () => resolve();
+            transaction.onerror = () => reject(transaction.error);
+            transaction.onabort = () => reject(transaction.error);
         });
     }
     /**
@@ -364,16 +378,19 @@ export class DbAction {
      * @throws {DOMException}
      */
     async executeClear() {
-        const store = this.resolveStoreOrIndex("readwrite", false);
+        const { source: store, tranx: transaction } = this.resolveStoreOrIndex("readwrite", false);
+        if (!(store instanceof IDBObjectStore)) {
+            throw new Error("Clear operations require an IDBObjectStore, not an IDBIndex");
+        }
         const request = store.clear();
         return new Promise((resolve, reject) => {
-            request.onsuccess = () => {
-                resolve();
-            };
             request.onerror = () => {
                 reject(request.error ||
                     new Error("Clear operation failed with unknown error"));
             };
+            transaction.oncomplete = () => resolve();
+            transaction.onerror = () => reject(transaction.error);
+            transaction.onabort = () => reject(transaction.error);
         });
     }
     /**
